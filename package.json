@@ -1,12 +1,12 @@
 {
-  "name": "@esmaeel_emadi/communication",
+  "name": "@wrk-t/communication",
   "version": "0.1.0",
   "description": "Communication infrastructure for NestJS — email sending via SMTP (nodemailer), with plans for SMS, OTP, and other notification channels.",
   "license": "MIT",
   "author": "emadi68moh@gmail.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/EsmaeelEmadi/communication"
+    "url": "https://github.com/wrk-t/communication"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
