@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import type { SendMailOptions, Transporter } from "nodemailer";
 import { createTransport } from "nodemailer";
 
@@ -27,11 +28,25 @@ export interface IVerificationMailOptions {
 	frontendUrl: string;
 }
 
+export interface IInvitationMailOptions {
+	to: string;
+	tenantName?: string | null;
+	roleName?: string | null;
+	frontendUrl: string;
+	/**
+	 * Set when the address is not a user yet: the recipient must create the
+	 * account, so the email carries an accept link (`[[147-task]]`). Without a
+	 * token the mail is the "you were added, sign in" notice it always was.
+	 */
+	token?: string | null;
+}
+
 // ──────────────────────────────────────────────────────────────────
 // CommunicationService
 // ──────────────────────────────────────────────────────────────────
 
 export class CommunicationService {
+	private static readonly logger = new Logger("CommunicationService");
 	private readonly transporter: Transporter;
 	private readonly defaultFrom: string;
 
@@ -63,7 +78,19 @@ export class CommunicationService {
 			mailOptions.html = options.html;
 		}
 
-		return this.transporter.sendMail(mailOptions);
+		// Log what the SMTP server ANSWERED, not just that we tried: "no email
+		// arrived" is otherwise indistinguishable from "we never sent it"
+		// ([[147-task]]). `accepted`/`rejected` and the messageId are what a mail
+		// provider needs to trace a message that left us and did not land.
+		const info = await this.transporter.sendMail(mailOptions);
+		CommunicationService.logger.log(
+			`mail to ${options.to}: messageId=${info?.messageId} accepted=${JSON.stringify(
+				info?.accepted ?? [],
+			)} rejected=${JSON.stringify(info?.rejected ?? [])} response=${
+				info?.response ?? ""
+			}`,
+		);
+		return info;
 	}
 
 	/**
@@ -89,6 +116,29 @@ export class CommunicationService {
 			to: options.to,
 			subject: "Reset your password",
 			text: `You requested a password reset. Click the link below to reset your password:\n\n${link}\n\nThis link will expire in 1 hour.\n\nIf you did not request this, please ignore this email.`,
+		});
+	}
+
+	/**
+	 * Send a tenant invitation email.
+	 */
+	async sendInvitationEmail(options: IInvitationMailOptions) {
+		const tenantPart = options.tenantName ? ` to ${options.tenantName}` : "";
+		const rolePart = options.roleName ? ` as ${options.roleName}` : "";
+
+		// An invited address has no account yet, so the link is what creates it;
+		// an existing user just signs in and reviews the pending membership.
+		const link = options.token
+			? `${options.frontendUrl}/accept-invitation?token=${options.token}`
+			: `${options.frontendUrl}/dashboard`;
+		const action = options.token
+			? "Accept the invitation and set your password"
+			: "Sign in to review and accept the invitation";
+
+		return this.sendMail({
+			to: options.to,
+			subject: "You've been invited to join a workspace",
+			text: `You have been invited${tenantPart}${rolePart} on the platform.\n\n${action}:\n${link}\n\nIf you did not expect this invitation, you can ignore this email.`,
 		});
 	}
 
