@@ -1,5 +1,7 @@
 import type { SendMailOptions, Transporter } from "nodemailer";
 import { createTransport } from "nodemailer";
+import type { MessageChannel, OutboundMessage, SendResult } from "./channels";
+import { renderEmailHtml } from "./email-body";
 
 // ──────────────────────────────────────────────────────────────────
 // Types
@@ -19,6 +21,9 @@ export interface ISendMailOptions {
 	subject: string;
 	text: string;
 	html?: string;
+	/** Display name for the From header ("Rose & Bean" <no-reply@…>). */
+	fromName?: string;
+	replyTo?: string;
 }
 
 export interface IVerificationMailOptions {
@@ -28,10 +33,18 @@ export interface IVerificationMailOptions {
 }
 
 // ──────────────────────────────────────────────────────────────────
-// CommunicationService
+// CommunicationService — the SMTP transport, also an email channel
+//
+// `sendMail` stays the low-level API auth already uses; `send()` is the
+// channel-contract view of it, returning a normalized result instead of
+// throwing. SMTP can only report **accepted** or **rejected**: a `sent`
+// here is not proof of delivery (see `DeliveryReceipt` for that).
 // ──────────────────────────────────────────────────────────────────
 
 export class CommunicationService {
+	readonly channel: MessageChannel = "email";
+	readonly provider = "smtp";
+
 	private readonly transporter: Transporter;
 	private readonly defaultFrom: string;
 
@@ -51,9 +64,11 @@ export class CommunicationService {
 	/**
 	 * Send a plain email.
 	 */
-	async sendMail(options: ISendMailOptions) {
+	sendMail(options: ISendMailOptions) {
 		const mailOptions: SendMailOptions = {
-			from: this.defaultFrom,
+			from: options.fromName
+				? `"${sanitizeDisplayName(options.fromName)}" <${this.defaultFrom}>`
+				: this.defaultFrom,
 			to: options.to,
 			subject: options.subject,
 			text: options.text,
@@ -62,14 +77,53 @@ export class CommunicationService {
 		if (options.html) {
 			mailOptions.html = options.html;
 		}
+		if (options.replyTo) {
+			mailOptions.replyTo = options.replyTo;
+		}
 
 		return this.transporter.sendMail(mailOptions);
 	}
 
 	/**
+	 * The channel-contract view of `sendMail`: never throws, always reports.
+	 */
+	async send(message: OutboundMessage): Promise<SendResult> {
+		const to = message.to?.trim();
+		if (!to) {
+			return {
+				provider: this.provider,
+				status: "failed",
+				errorCode: "invalid_recipient",
+				errorMessage: "Email recipient is empty",
+			};
+		}
+
+		try {
+			const info = await this.sendMail({
+				to,
+				subject: message.subject ?? "",
+				text: message.body,
+				// A tenant writes text; the shell is ours. A caller that
+				// already has HTML passes it explicitly.
+				html: message.html ?? renderEmailHtml(message.body),
+				...(message.fromName ? { fromName: message.fromName } : {}),
+				...(message.replyTo ? { replyTo: message.replyTo } : {}),
+			});
+
+			return {
+				provider: this.provider,
+				providerMessageId: info?.messageId ?? null,
+				status: "sent",
+			};
+		} catch (error) {
+			return this.mapError(error);
+		}
+	}
+
+	/**
 	 * Send an email verification link.
 	 */
-	async sendVerificationEmail(options: IVerificationMailOptions) {
+	sendVerificationEmail(options: IVerificationMailOptions) {
 		const link = `${options.frontendUrl}/verify-email?token=${options.token}`;
 
 		return this.sendMail({
@@ -82,7 +136,7 @@ export class CommunicationService {
 	/**
 	 * Send a password reset link.
 	 */
-	async sendPasswordResetEmail(options: IVerificationMailOptions) {
+	sendPasswordResetEmail(options: IVerificationMailOptions) {
 		const link = `${options.frontendUrl}/reset-password?token=${options.token}`;
 
 		return this.sendMail({
@@ -103,4 +157,26 @@ export class CommunicationService {
 			return false;
 		}
 	}
+
+	/**
+	 * SMTP errors are all transport-level except a refused recipient, which
+	 * nodemailer reports as `EENVELOPE`. Everything else is `provider_error`.
+	 */
+	private mapError(error: unknown): SendResult {
+		const code = (error as { code?: string } | null)?.code;
+		const message =
+			error instanceof Error ? error.message : String(error ?? "unknown");
+
+		return {
+			provider: this.provider,
+			status: "failed",
+			errorCode: code === "EENVELOPE" ? "invalid_recipient" : "provider_error",
+			errorMessage: message,
+		};
+	}
+}
+
+/** Quotes/backslashes would break the From header. */
+function sanitizeDisplayName(name: string): string {
+	return name.replace(/["\\\r\n]/g, "").trim();
 }
