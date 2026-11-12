@@ -79,7 +79,7 @@ export class CommunicationService {
 	/**
 	 * Send a plain email.
 	 */
-	sendMail(options: ISendMailOptions) {
+	async sendMail(options: ISendMailOptions) {
 		const mailOptions: SendMailOptions = {
 			from: options.fromName
 				? `"${sanitizeDisplayName(options.fromName)}" <${this.defaultFrom}>`
